@@ -1,11 +1,12 @@
 {
-  "domain": "tigo",
+  "domain": "tigo_cloud",
   "name": "Tigo cloud",
   "codeowners": ["@MartinStoffel"],
   "config_flow": true,
   "dependencies": ["http"],
   "documentation": "https://github.com/MartinStoffel/tigo",
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/MartinStoffel/tigo/issues",
   "requirements": [],
   "version": "0.1.0"
 }

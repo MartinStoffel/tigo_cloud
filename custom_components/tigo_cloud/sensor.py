@@ -22,6 +22,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 
+import logging
+_LOGGER = logging.getLogger(__name__)
+
 PANEL_PROPERTIES = {
     "energy": {
         "name": "Energy",
@@ -160,9 +163,9 @@ class TigoSummarySensor(CoordinatorEntity, SensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._property = property
-        self._attr_unique_id = DOMAIN + "tigo.summary." + property
+        self._attr_unique_id = DOMAIN + "tigo.summary." + coordinator.get_systemId() + "." + property
 
-        self._attr_name = SUMMARY_PROPERTIES[property]["name"]
+        self._attr_name = SUMMARY_PROPERTIES[property]["name"] + " [" + coordinator.get_systemId() + "]"
         self._attr_native_unit_of_measurement = SUMMARY_PROPERTIES[property][
             "native_unit_of_measurement"
         ]
@@ -195,7 +198,7 @@ class TigoPanelSensor(CoordinatorEntity, SensorEntity):
         self._panel = panel
         self._attr_unique_id = DOMAIN + "tigo." + panel["T"] + "_" + property
 
-        self._attr_name = panel["C"] + " " + PANEL_PROPERTIES[property]["name"]
+        self._attr_name = panel["C"] + " " + PANEL_PROPERTIES[property]["name"] + " [" + coordinator.get_systemId() + "]"
         self._attr_native_unit_of_measurement = PANEL_PROPERTIES[property][
             "native_unit_of_measurement"
         ]

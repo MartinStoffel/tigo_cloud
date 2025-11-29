@@ -1,4 +1,4 @@
-DOMAIN = "tigo"
+DOMAIN = "tigo_cloud"
 
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"

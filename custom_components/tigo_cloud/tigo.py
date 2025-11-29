@@ -198,6 +198,10 @@ class TigoData:
         """Retun summary reading."""
         return self._data.get(property)
 
+    def get_systemId(self) -> any:
+        """Return the system id"""
+        return self._systemId
+
 
 # see https://developers.home-assistant.io/docs/integration_fetching_data/
 class TigoCoordinator(DataUpdateCoordinator):
@@ -232,6 +236,6 @@ class TigoCoordinator(DataUpdateCoordinator):
         """Get the summary reading."""
         return self.tigo_data.get_summary(property)
 
-    def get_data(self) -> any:
-        """Get the whole reaging data."""
-        return self.htigo_data.get_data()
+    def get_systemId(self) -> any:
+        """Return the system id"""
+        return self.tigo_data.get_systemId()
