@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from homeassistant.const import Platform
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_PASSWORD, CONF_SYSTEMID, CONF_USERNAME, DOMAIN
+from .const import CONF_SYSTEMID, DOMAIN
 from .tigo import TigoConfigEntry, TigoCoordinator, TigoData, create_session
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
@@ -13,18 +13,18 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, entry: TigoConfigEntry) -> bool:
     """Set up the element."""
-    systemId = entry.data[CONF_SYSTEMID]
+    system_id = entry.data[CONF_SYSTEMID]
     # Entries from before the config flow set a unique id; backfill it unless it would clash
     if entry.unique_id is None and not hass.config_entries.async_entry_for_domain_unique_id(
-        DOMAIN, systemId
+        DOMAIN, system_id
     ):
-        hass.config_entries.async_update_entry(entry, unique_id=systemId)
+        hass.config_entries.async_update_entry(entry, unique_id=system_id)
 
     data = TigoData(
         create_session(hass),
         entry.data[CONF_USERNAME],
         entry.data[CONF_PASSWORD],
-        systemId,
+        system_id,
     )
     coordinator = TigoCoordinator(hass, entry, data)
 

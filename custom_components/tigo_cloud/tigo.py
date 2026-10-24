@@ -86,18 +86,18 @@ class CookieCache:
         self._username = username
         self._password = password
         self._cookie: Morsel[str] | None = None
-        self._validTill = datetime.min.replace(tzinfo=UTC)
+        self._valid_till = datetime.min.replace(tzinfo=UTC)
 
-    async def getAuthHeader(self) -> dict[str, str]:
+    async def get_auth_header(self) -> dict[str, str]:
         """Return the Auth header, logging in first if needed."""
-        if self._cookie is None or self._validTill <= dt_util.utcnow():
+        if self._cookie is None or self._valid_till <= dt_util.utcnow():
             self._cookie = await self.__login()
         return {
             "accept": "application/json",
             "Authorization": f"Bearer {self._cookie.value}",
         }
 
-    def resetCookie(self) -> None:
+    def reset_cookie(self) -> None:
         """Forget the cookie, so the next request logs in again."""
         self._cookie = None
 
@@ -120,14 +120,14 @@ class CookieCache:
             if csrf is None:
                 raise TigoResponseError("No CSRF token on the Tigo login page")
 
-            formData = {
+            form_data = {
                 "_csrf": csrf,
                 "LoginFormModel[login]": self._username,
                 "LoginFormModel[password]": self._password,
                 "LoginFormModel[remember_me]": "0",
             }
             async with self._session.post(
-                TIGO_URL, data=formData, timeout=REQUEST_TIMEOUT
+                TIGO_URL, data=form_data, timeout=REQUEST_TIMEOUT
             ) as response:
                 status = response.status
         except (aiohttp.ClientError, TimeoutError) as err:
@@ -141,7 +141,7 @@ class CookieCache:
 
         # Renew an hour before the cookie expires; without a max-age, renew on a 401
         max_age = str(cookie["max-age"])
-        self._validTill = (
+        self._valid_till = (
             dt_util.utcnow() + timedelta(seconds=int(max_age), hours=-1)
             if max_age.isdigit()
             else datetime.max.replace(tzinfo=UTC)
@@ -157,12 +157,12 @@ class TigoData:
     ) -> None:
         """Initialize the client."""
         self._session = session
-        self._cookieCache = CookieCache(session, username, password)
-        self._systemId = systemid
-        self._lastTime: str | None = None
-        self._lastSlowUpdate: datetime | None = None
+        self._cookie_cache = CookieCache(session, username, password)
+        self._system_id = systemid
+        self._last_time: str | None = None
+        self._last_slow_update: datetime | None = None
         self._failing: set[str] = set()
-        self._requestLimit = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
+        self._request_limit = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
         self._data: dict[str, Any] = {}
 
     def get_value(self, graph) -> Any:
@@ -179,38 +179,38 @@ class TigoData:
     async def async_get_panels(self) -> list[dict[str, Any]]:
         """Log in and return the panels of the system."""
         # This endpoint authenticates with the login cookies instead of the bearer
-        await self._cookieCache.getAuthHeader()
-        query = f"/system/summary/config?system_id={self._systemId}&resourceId=config&v=0.1.0&_=0"
+        await self._cookie_cache.get_auth_header()
+        query = f"/system/summary/config?system_id={self._system_id}&resourceId=config&v=0.1.0&_=0"
         try:
             system = await self._get_json(query)
             return [x for x in system["system"]["objects"] if x.get("B") == 2]
         except (TigoResponseError, KeyError, TypeError, AttributeError) as err:
             raise TigoSystemError(
-                f"System {self._systemId} is not accessible: {err}"
+                f"System {self._system_id} is not accessible: {err}"
             ) from err
 
     async def fetch_data(self) -> dict[str, Any]:
         """Get the data from the web api."""
         date = dt_util.now().date()
         val = await self._get_api(
-            f"/api/v4/system/summary/aggenergy?system_id={self._systemId}&date={date}"
+            f"/api/v4/system/summary/aggenergy?system_id={self._system_id}&date={date}"
         )
         try:
             self._data["energy"] = _dataset(val)
-            lastData = val["datasetLastData"]
+            last_data = val["datasetLastData"]
             # HH:MM of the latest reading, empty before the first reading of the day
-            time = next(iter(lastData.values()), "")[11:16] if lastData else ""
+            time = next(iter(last_data.values()), "")[11:16] if last_data else ""
         except (KeyError, TypeError, AttributeError) as err:
             raise TigoResponseError(f"Unexpected energy data: {err}") from err
 
-        headers = await self._cookieCache.getAuthHeader()
+        headers = await self._cookie_cache.get_auth_header()
         requests = []
-        if time and time != self._lastTime:
-            self._lastTime = time
+        if time and time != self._last_time:
+            self._last_time = time
             requests += [
                 self._fetch_optional(
                     value,
-                    f"/api/v4/system/summary/lastvalue?system_id={self._systemId}&resourceId=lastValue-{date}-{value}-{time}&v=0.1.0&_=0",
+                    f"/api/v4/system/summary/lastvalue?system_id={self._system_id}&resourceId=lastValue-{date}-{value}-{time}&v=0.1.0&_=0",
                     headers,
                     _dataset,
                 )
@@ -220,13 +220,13 @@ class TigoData:
         # Get summary data
         aggs = ["now", "hour", "day"]
         now = dt_util.utcnow()
-        if self._lastSlowUpdate is None or now - self._lastSlowUpdate >= SLOW_SCAN_INTERVAL:
-            self._lastSlowUpdate = now
+        if self._last_slow_update is None or now - self._last_slow_update >= SLOW_SCAN_INTERVAL:
+            self._last_slow_update = now
             aggs += ["month", "year"]
             requests.append(
                 self._fetch_optional(
                     "allTime",
-                    f"/fleet/system/overview/data-lifetime?sysid={self._systemId}&range=lifetime",
+                    f"/fleet/system/overview/data-lifetime?sysid={self._system_id}&range=lifetime",
                     headers,
                     lambda value: value["energy"],
                 )
@@ -234,7 +234,7 @@ class TigoData:
         requests += [
             self._fetch_optional(
                 agg,
-                f"/api/v4/data/aggregate?systemId={self._systemId}&view=gen&output=echart&type=bar&agg={agg}&start={date}&end={date}&reclaimed=true",
+                f"/api/v4/data/aggregate?systemId={self._system_id}&view=gen&output=echart&type=bar&agg={agg}&start={date}&end={date}&reclaimed=true",
                 headers,
                 self.get_value,
             )
@@ -248,7 +248,7 @@ class TigoData:
     ) -> None:
         """Fetch a secondary value; on failure keep the last one instead of failing the update."""
         try:
-            async with self._requestLimit:
+            async with self._request_limit:
                 response = await self._get_json(query, headers)
             self._data[key] = parse(response)
         except (TigoError, LookupError, TypeError, AttributeError) as err:
@@ -263,12 +263,12 @@ class TigoData:
     async def _get_api(self, query: str) -> Any:
         """GET an API endpoint, logging in again once if the token is rejected."""
         try:
-            return await self._get_json(query, await self._cookieCache.getAuthHeader())
+            return await self._get_json(query, await self._cookie_cache.get_auth_header())
         except TigoResponseError as err:
             if err.status not in (401, 403):
                 raise
-        self._cookieCache.resetCookie()
-        return await self._get_json(query, await self._cookieCache.getAuthHeader())
+        self._cookie_cache.reset_cookie()
+        return await self._get_json(query, await self._cookie_cache.get_auth_header())
 
     async def _get_json(self, query: str, headers: dict[str, str] | None = None) -> Any:
         """GET a Tigo endpoint and decode its JSON answer."""
@@ -286,9 +286,9 @@ class TigoData:
         except (aiohttp.ClientError, TimeoutError) as err:
             raise TigoConnectionError(f"{query} failed: {err}") from err
 
-    def get_systemId(self) -> str:
+    def get_system_id(self) -> str:
         """Return the system id"""
-        return self._systemId
+        return self._system_id
 
 
 # see https://developers.home-assistant.io/docs/integration_fetching_data/
@@ -329,6 +329,6 @@ class TigoCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except TigoError as err:
             raise UpdateFailed(str(err)) from err
 
-    def get_systemId(self) -> str:
+    def get_system_id(self) -> str:
         """Return the system id"""
-        return self.tigo_data.get_systemId()
+        return self.tigo_data.get_system_id()

@@ -167,7 +167,7 @@ class TigoSensor(CoordinatorEntity[TigoCoordinator], SensorEntity):
             "suggested_display_precision"
         )
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.get_systemId())},
+            identifiers={(DOMAIN, coordinator.get_system_id())},
             name=coordinator.config_entry.title,
             manufacturer="Tigo Energy",
             configuration_url=TIGO_URL,
@@ -181,7 +181,7 @@ class TigoSummarySensor(TigoSensor):
         """Initialize the sensor."""
         super().__init__(coordinator, SUMMARY_PROPERTIES[property])
         self._property = property
-        self._attr_unique_id = DOMAIN + "tigo.summary." + coordinator.get_systemId() + "." + property
+        self._attr_unique_id = DOMAIN + "tigo.summary." + coordinator.get_system_id() + "." + property
         self._attr_name = SUMMARY_PROPERTIES[property]["name"]
 
     @property

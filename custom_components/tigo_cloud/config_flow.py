@@ -51,7 +51,7 @@ async def validate_input(hass: HomeAssistant, data: Mapping[str, Any]) -> dict[s
     return {}
 
 
-class ConfigFlow(ConfigFlow, domain=DOMAIN):
+class TigoConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Tigo Cloud Sensor."""
 
     VERSION = 1
