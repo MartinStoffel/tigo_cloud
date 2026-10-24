@@ -1,6 +1,6 @@
 """Sensors for Tigo."""
 
-import contextlib
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -15,15 +15,13 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
-
-import logging
-_LOGGER = logging.getLogger(__name__)
+from .const import DOMAIN, TIGO_URL
+from .tigo import TigoConfigEntry, TigoCoordinator
 
 PANEL_PROPERTIES = {
     "energy": {
@@ -55,7 +53,7 @@ PANEL_PROPERTIES = {
         "attr_icon": "mdi:square-wave",
     },
     "temp": {
-        "name": "Temperature ",
+        "name": "Temperature",
         "native_unit_of_measurement": UnitOfTemperature.CELSIUS,
         "device_class": SensorDeviceClass.TEMPERATURE,
         "state_class": SensorStateClass.MEASUREMENT,
@@ -138,87 +136,73 @@ SUMMARY_PROPERTIES = {
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, config: ConfigType, add_entities: AddEntitiesCallback
+    hass: HomeAssistant, entry: TigoConfigEntry, add_entities: AddEntitiesCallback
 ) -> None:
     """Set up the sensors."""
-    coordinator = hass.data[DOMAIN][config.entry_id]
+    coordinator = entry.runtime_data
 
-    entities = []
-    for panel in coordinator.get_panels():
-        for key in PANEL_PROPERTIES:
-            with contextlib.suppress(Exception):
-                entities.append(TigoPanelSensor(panel, coordinator, key))
-
-    for key in SUMMARY_PROPERTIES:
-        with contextlib.suppress(Exception):
-            entities.append(TigoSummarySensor(coordinator, key))
+    entities: list[SensorEntity] = [
+        TigoPanelSensor(panel, coordinator, key)
+        for panel in coordinator.panels
+        for key in PANEL_PROPERTIES
+    ]
+    entities += [TigoSummarySensor(coordinator, key) for key in SUMMARY_PROPERTIES]
 
     add_entities(entities)
 
 
-class TigoSummarySensor(CoordinatorEntity, SensorEntity):
-    """The Tigo summary sensor, showing daily, monthly ans yearly stats."""
+class TigoSensor(CoordinatorEntity[TigoCoordinator], SensorEntity):
+    """Common setup of the Tigo sensors, grouped under one device per system."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: TigoCoordinator, properties: dict[str, Any]) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_native_unit_of_measurement = properties["native_unit_of_measurement"]
+        self._attr_device_class = properties["device_class"]
+        self._attr_state_class = properties["state_class"]
+        self._attr_icon = properties["attr_icon"]
+        self._attr_suggested_display_precision = properties.get(
+            "suggested_display_precision"
+        )
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.get_systemId())},
+            name=coordinator.config_entry.title,
+            manufacturer="Tigo Energy",
+            configuration_url=TIGO_URL,
+        )
+
+
+class TigoSummarySensor(TigoSensor):
+    """The Tigo summary sensor, showing daily, monthly and yearly stats."""
 
     def __init__(self, coordinator, property) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, SUMMARY_PROPERTIES[property])
         self._property = property
         self._attr_unique_id = DOMAIN + "tigo.summary." + coordinator.get_systemId() + "." + property
+        self._attr_name = SUMMARY_PROPERTIES[property]["name"]
 
-        self._attr_name = SUMMARY_PROPERTIES[property]["name"] + " [" + coordinator.get_systemId() + "]"
-        self._attr_native_unit_of_measurement = SUMMARY_PROPERTIES[property][
-            "native_unit_of_measurement"
-        ]
-        self._attr_device_class = SUMMARY_PROPERTIES[property]["device_class"]
-        self._attr_state_class = SUMMARY_PROPERTIES[property]["state_class"]
-        self._attr_icon = SUMMARY_PROPERTIES[property]["attr_icon"]
-        self._attr_suggested_display_precision = SUMMARY_PROPERTIES[property].get(
-            "suggested_display_precision"
-        )
-        self.update()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.update()
-        self.async_write_ha_state()
-
-    def update(self) -> None:
-        """Update the data values."""
-        self._attr_native_value = self.coordinator.get_summary(self._property)
+    @property
+    def native_value(self) -> Any:
+        """Return the summary reading."""
+        return self.coordinator.data.get(self._property)
 
 
-class TigoPanelSensor(CoordinatorEntity, SensorEntity):
-    """The Tigo panle sensor."""
+class TigoPanelSensor(TigoSensor):
+    """The Tigo panel sensor."""
 
     def __init__(self, panel, coordinator, property) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, PANEL_PROPERTIES[property])
         self._property = property
         self._panel = panel
         self._attr_unique_id = DOMAIN + "tigo." + panel["T"] + "_" + property
-
-        self._attr_name = panel["C"] + " " + PANEL_PROPERTIES[property]["name"] + " [" + coordinator.get_systemId() + "]"
-        self._attr_native_unit_of_measurement = PANEL_PROPERTIES[property][
-            "native_unit_of_measurement"
-        ]
-        self._attr_device_class = PANEL_PROPERTIES[property]["device_class"]
-        self._attr_state_class = PANEL_PROPERTIES[property]["state_class"]
-        self._attr_icon = PANEL_PROPERTIES[property]["attr_icon"]
-        self._attr_suggested_display_precision = PANEL_PROPERTIES[property].get(
-            "suggested_display_precision"
-        )
+        self._attr_name = panel["C"] + " " + PANEL_PROPERTIES[property]["name"]
         self._attr_extra_state_attributes = panel
-        self.update()
 
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.update()
-        self.async_write_ha_state()
-
-    def update(self) -> None:
-        """Update the data values."""
-        self._attr_native_value = self.coordinator.get_reading(
-            self._panel["A"], self._property
-        )
+    @property
+    def native_value(self) -> Any:
+        """Return the panel reading."""
+        return self.coordinator.data.get(self._property, {}).get(str(self._panel["A"]))
