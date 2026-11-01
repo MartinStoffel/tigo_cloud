@@ -135,9 +135,11 @@ class CookieCache:
 
         cookie = next((c for c in self._session.cookie_jar if c.key == "wssJwt"), None)
         if cookie is None:
-            if status >= 500:
-                raise TigoResponseError(f"Tigo login failed with status {status}", status)
-            raise TigoAuthError("Tigo rejected the login")
+            # A rejected login shows the login form again; other answers (rate limit,
+            # server error) are no reason to ask for the password
+            if status in (200, 401, 403):
+                raise TigoAuthError("Tigo rejected the login, check username and password")
+            raise TigoResponseError(f"Tigo login failed with status {status}", status)
 
         # Renew an hour before the cookie expires; without a max-age, renew on a 401
         max_age = str(cookie["max-age"])
@@ -161,20 +163,22 @@ class TigoData:
         self._system_id = systemid
         self._last_time: str | None = None
         self._last_slow_update: datetime | None = None
+        # Readings that arrived at least once, and readings failing right now
+        self._delivered: set[str] = set()
         self._failing: set[str] = set()
         self._request_limit = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
         self._data: dict[str, Any] = {}
 
     def get_value(self, graph) -> Any:
-        """Return the reading."""
-        result = 0
+        """Return the reading, None if the graph has no solar total."""
         for serie in graph["series"]:
             if serie["id"] == "solar_total":
+                result = 0
                 for data in serie["data"]:
                     if data[1] is not None:
                         result = data[1]
-                break
-        return result
+                return result
+        return None
 
     async def async_get_panels(self) -> list[dict[str, Any]]:
         """Log in and return the panels of the system."""
@@ -217,10 +221,19 @@ class TigoData:
                 for value in PANEL_VALUES
             ]
 
-        # Get summary data
+        # Get summary data; a slow total that stopped arriving is retried on the next
+        # update instead of showing unknown until the next slow update
         aggs = ["now", "hour", "day"]
         now = dt_util.utcnow()
-        if self._last_slow_update is None or now - self._last_slow_update >= SLOW_SCAN_INTERVAL:
+        retry = any(
+            key in self._failing and key in self._delivered
+            for key in ("month", "year", "allTime")
+        )
+        if (
+            retry
+            or self._last_slow_update is None
+            or now - self._last_slow_update >= SLOW_SCAN_INTERVAL
+        ):
             self._last_slow_update = now
             aggs += ["month", "year"]
             requests.append(
@@ -246,19 +259,25 @@ class TigoData:
     async def _fetch_optional(
         self, key: str, query: str, headers: dict[str, str], parse: Callable[[Any], Any]
     ) -> None:
-        """Fetch a secondary value; on failure keep the last one instead of failing the update."""
+        """Fetch a secondary value; a failure makes it unknown instead of failing the update."""
         try:
             async with self._request_limit:
                 response = await self._get_json(query, headers)
-            self._data[key] = parse(response)
+            value = parse(response)
         except (TigoError, LookupError, TypeError, AttributeError) as err:
+            # Show unknown rather than the reading of an earlier time
+            self._data.pop(key, None)
             if key not in self._failing:
                 self._failing.add(key)
-                _LOGGER.warning("Could not fetch %s from Tigo, keeping the last value: %s", key, err)
+                # Data the license of the system doesn't cover always fails, no reason to warn
+                level = logging.WARNING if key in self._delivered else logging.DEBUG
+                _LOGGER.log(level, "Tigo did not send %s: %s", key, err)
             return
-        if key in self._failing:
-            self._failing.discard(key)
-            _LOGGER.info("Fetching %s from Tigo works again", key)
+        if key in self._failing and key in self._delivered:
+            _LOGGER.info("Tigo sends %s again", key)
+        self._failing.discard(key)
+        self._delivered.add(key)
+        self._data[key] = value
 
     async def _get_api(self, query: str) -> Any:
         """GET an API endpoint, logging in again once if the token is rejected."""
@@ -328,6 +347,10 @@ class TigoCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except TigoError as err:
             raise UpdateFailed(str(err)) from err
+
+    def has_reading(self, property: str) -> bool:
+        """Return whether any panel has a reading of property."""
+        return any(v is not None for v in self.data.get(property, {}).values())
 
     def get_system_id(self) -> str:
         """Return the system id"""

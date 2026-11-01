@@ -1,5 +1,6 @@
 """Sensors for Tigo."""
 
+import logging
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -15,13 +16,15 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, TIGO_URL
 from .tigo import TigoConfigEntry, TigoCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 PANEL_PROPERTIES = {
     "energy": {
@@ -141,14 +144,36 @@ async def async_setup_entry(
     """Set up the sensors."""
     coordinator = entry.runtime_data
 
-    entities: list[SensorEntity] = [
-        TigoPanelSensor(panel, coordinator, key)
-        for panel in coordinator.panels
-        for key in PANEL_PROPERTIES
-    ]
-    entities += [TigoSummarySensor(coordinator, key) for key in SUMMARY_PROPERTIES]
+    panels = []
+    for panel in coordinator.panels:
+        if all(key in panel for key in ("A", "C", "T")):
+            panels.append(panel)
+        else:
+            _LOGGER.warning("Skipping panel without id or label: %s", panel)
 
-    add_entities(entities)
+    # Tigo only sends the data the license of the system covers, so a sensor is
+    # added once its data arrives, and never if it does not.
+    added: set[str] = set()
+
+    @callback
+    def add_new_sensors() -> None:
+        """Add the sensors whose data arrived for the first time."""
+        entities: list[SensorEntity] = []
+        for key in PANEL_PROPERTIES:
+            if key not in added and coordinator.has_reading(key):
+                added.add(key)
+                entities += [TigoPanelSensor(panel, coordinator, key) for panel in panels]
+
+        for key in SUMMARY_PROPERTIES:
+            if key not in added and coordinator.data.get(key) is not None:
+                added.add(key)
+                entities.append(TigoSummarySensor(coordinator, key))
+
+        if entities:
+            add_entities(entities)
+
+    add_new_sensors()
+    entry.async_on_unload(coordinator.async_add_listener(add_new_sensors))
 
 
 class TigoSensor(CoordinatorEntity[TigoCoordinator], SensorEntity):
