@@ -1,7 +1,9 @@
 {
     "config": {
+        "flow_title": "System {systemid}",
         "abort": {
             "already_configured": "Device is already configured",
+            "already_in_progress": "This system is already being set up",
             "reauth_successful": "Re-authentication was successful"
         },
         "error": {
@@ -19,12 +21,21 @@
                     "password": "password"
                 }
             },
+            "take_over": {
+                "description": "Take over Tigo system {systemid} from the legacy Tigo integration? Its sensors keep their entity ids, history and statistics, and the system is removed from the legacy integration."
+            },
             "reauth_confirm": {
                 "description": "The Tigo login for {username} stopped working. Enter the current password.",
                 "data": {
                     "password": "password"
                 }
             }
+        }
+    },
+    "issues": {
+        "take_over_clash": {
+            "title": "Tigo system {systemid} is set up twice",
+            "description": "Tigo system {systemid} is set up in this integration and in the legacy Tigo integration. Its sensors were not taken over from the legacy integration, as this one has them already: {entities}.\n\nTo continue the legacy sensors and their history, delete the system here and add it again; the sensors of this integration so far keep their history under their own entity ids. To keep the sensors of this integration, delete the system from the legacy integration instead."
         }
     }
 }

@@ -1,8 +1,18 @@
 # Tigo Cloud
 
-This supports multiple systems, unlike the original (https://github.com/MartinStoffel/tigo), which I left so that no data is lost.
+Integration of the Tigo Cloud into Home Assistant, for one or more systems.
 
-Integration of the Tigo Cloud into Home Assistant
+## Coming from the legacy Tigo integration
+
+This integration replaces the legacy one (https://github.com/MartinStoffel/tigo), which supports a single system only. It takes over your systems, and their sensors keep their entity ids, history and statistics, so the energy dashboard and automations carry on:
+
+1. Install Tigo Cloud via HACS (button below) and restart Home Assistant.
+2. Confirm the discovered Tigo system under Settings → Devices & services. Without the latest version of the legacy integration there is no discovery; add the Tigo Cloud integration instead, it suggests the system and login of the legacy one.
+3. Once all systems are taken over, remove the legacy Tigo integration from HACS.
+
+The sensors are now grouped in a device per system, so their names start with the system name, unless you renamed them.
+
+## About
 
 Currently quite basic, just integrates the panel data, since that is the Tigo hardware I have. 
 

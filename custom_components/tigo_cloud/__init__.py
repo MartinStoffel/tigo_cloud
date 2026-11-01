@@ -6,6 +6,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_SYSTEMID, DOMAIN
+from .take_over import async_take_over
 from .tigo import TigoConfigEntry, TigoCoordinator, TigoData, create_session
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
@@ -19,6 +20,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: TigoConfigEntry) -> bool
         DOMAIN, system_id
     ):
         hass.config_entries.async_update_entry(entry, unique_id=system_id)
+
+    # Before the sensors are added, so they continue the legacy integration's ones
+    await async_take_over(hass, entry)
 
     data = TigoData(
         create_session(hass),
