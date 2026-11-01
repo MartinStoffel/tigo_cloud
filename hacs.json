@@ -1,6 +1,6 @@
 {
   "name": "Tigo cloud",
   "render_readme": true,
-  "country": "CH"
+  "homeassistant": "2025.1.0"
 }
 
