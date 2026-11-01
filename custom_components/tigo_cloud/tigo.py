@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from http.cookies import Morsel
 import logging
 from typing import Any
@@ -22,15 +22,24 @@ from .const import TIGO_URL
 
 _LOGGER = logging.getLogger(__name__)
 
-# Time between updating data
+# Time between updating data, for the premium plan and while the plan is unknown
 SCAN_INTERVAL = timedelta(minutes=1)
+# The data of the free plan changes only about every 15 minutes
+FREE_SCAN_INTERVAL = timedelta(minutes=5)
 # Month, year and lifetime totals change slowly, so they are fetched less often
 SLOW_SCAN_INTERVAL = timedelta(minutes=15)
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 # Fetch the secondary values in parallel, but no more at once than a browser would
 MAX_PARALLEL_REQUESTS = 4
+# Tigo's servers often answer with a server error (5xx) and succeed a few seconds
+# later. Its web portal retries after 5 seconds as well
+RETRIES = 2
+RETRY_DELAY = 5  # seconds
 
+# Panel readings. The free plan covers power and reclaimed power (and the energy,
+# read separately), all others need the premium plan
 PANEL_VALUES = ("pin", "rssi", "pwm", "temp", "vin", "vout", "iin", "reclaimedPower")
+FREE_PANEL_VALUES = ("pin", "reclaimedPower")
 
 type TigoConfigEntry = ConfigEntry[TigoCoordinator]
 
@@ -63,6 +72,13 @@ class TigoSystemError(TigoError):
 def create_session(hass: HomeAssistant) -> aiohttp.ClientSession:
     """Create a session with its own cookie jar, as the Tigo login is cookie based."""
     return async_create_clientsession(hass, cookie_jar=aiohttp.CookieJar())
+
+
+def _has_data(reading: Any) -> bool:
+    """Return whether a reading has a value; for panel readings, of any panel."""
+    if isinstance(reading, dict):
+        return any(v is not None for v in reading.values())
+    return reading is not None
 
 
 def _dataset(response: Any) -> dict[str, Any]:
@@ -163,11 +179,31 @@ class TigoData:
         self._system_id = systemid
         self._last_time: str | None = None
         self._last_slow_update: datetime | None = None
-        # Readings that arrived at least once, and readings failing right now
+        # Readings that had a value at least once, and readings failing right now
         self._delivered: set[str] = set()
         self._failing: set[str] = set()
         self._request_limit = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
+        # The day the plan was last read; the plan itself is in the data
+        self._plan_date: date | None = None
         self._data: dict[str, Any] = {}
+
+    async def _update_plan(self, today: date, headers: dict[str, str]) -> None:
+        """Read once a day whether the system has the premium plan."""
+        if self._plan_date == today:
+            return
+        query = f"/system/summary/systeminfo?system_id={self._system_id}&date={today}&resourceId=dateinfo-{today}&v=0.1.0&_=0"
+        try:
+            premium = (await self._get_json(query, headers)).get("has_premium")
+        except (TigoError, AttributeError) as err:
+            # Keep the plan known so far, and try again on the next update
+            _LOGGER.debug("Reading the plan failed: %s", err)
+            return
+        if isinstance(premium, bool):
+            plan = "Premium" if premium else "Free"
+            if plan != self._data.get("plan"):
+                _LOGGER.debug("The system has the %s plan", plan)
+                self._data["plan"] = plan
+        self._plan_date = today
 
     def get_value(self, graph) -> Any:
         """Return the reading, None if the graph has no solar total."""
@@ -195,9 +231,9 @@ class TigoData:
 
     async def fetch_data(self) -> dict[str, Any]:
         """Get the data from the web api."""
-        date = dt_util.now().date()
+        today = dt_util.now().date()
         val = await self._get_api(
-            f"/api/v4/system/summary/aggenergy?system_id={self._system_id}&date={date}"
+            f"/api/v4/system/summary/aggenergy?system_id={self._system_id}&date={today}"
         )
         try:
             self._data["energy"] = _dataset(val)
@@ -208,18 +244,25 @@ class TigoData:
             raise TigoResponseError(f"Unexpected energy data: {err}") from err
 
         headers = await self._cookie_cache.get_auth_header()
+        await self._update_plan(today, headers)
+
         requests = []
         if time and time != self._last_time:
             self._last_time = time
-            requests += [
-                self._fetch_optional(
-                    value,
-                    f"/api/v4/system/summary/lastvalue?system_id={self._system_id}&resourceId=lastValue-{date}-{value}-{time}&v=0.1.0&_=0",
-                    headers,
-                    _dataset,
+            free = self._data.get("plan") == "Free"
+            for value in PANEL_VALUES:
+                if free and value not in FREE_PANEL_VALUES:
+                    # Not covered by the free plan
+                    self._data.pop(value, None)
+                    continue
+                requests.append(
+                    self._fetch_optional(
+                        value,
+                        f"/api/v4/system/summary/lastvalue?system_id={self._system_id}&resourceId=lastValue-{today}-{value}-{time}&v=0.1.0&_=0",
+                        headers,
+                        _dataset,
+                    )
                 )
-                for value in PANEL_VALUES
-            ]
 
         # Get summary data; a slow total that stopped arriving is retried on the next
         # update instead of showing unknown until the next slow update
@@ -247,7 +290,7 @@ class TigoData:
         requests += [
             self._fetch_optional(
                 agg,
-                f"/api/v4/data/aggregate?systemId={self._system_id}&view=gen&output=echart&type=bar&agg={agg}&start={date}&end={date}&reclaimed=true",
+                f"/api/v4/data/aggregate?systemId={self._system_id}&view=gen&output=echart&type=bar&agg={agg}&start={today}&end={today}&reclaimed=true",
                 headers,
                 self.get_value,
             )
@@ -269,14 +312,15 @@ class TigoData:
             self._data.pop(key, None)
             if key not in self._failing:
                 self._failing.add(key)
-                # Data the license of the system doesn't cover always fails, no reason to warn
+                # Data the plan doesn't cover may never have a value, no reason to warn
                 level = logging.WARNING if key in self._delivered else logging.DEBUG
                 _LOGGER.log(level, "Tigo did not send %s: %s", key, err)
             return
         if key in self._failing and key in self._delivered:
             _LOGGER.info("Tigo sends %s again", key)
         self._failing.discard(key)
-        self._delivered.add(key)
+        if _has_data(value):
+            self._delivered.add(key)
         self._data[key] = value
 
     async def _get_api(self, query: str) -> Any:
@@ -290,20 +334,24 @@ class TigoData:
         return await self._get_json(query, await self._cookie_cache.get_auth_header())
 
     async def _get_json(self, query: str, headers: dict[str, str] | None = None) -> Any:
-        """GET a Tigo endpoint and decode its JSON answer."""
-        try:
-            async with self._session.get(
-                TIGO_URL + query, headers=headers, timeout=REQUEST_TIMEOUT
-            ) as response:
-                if response.status != 200:
-                    raise TigoResponseError(
-                        f"{query} failed with status {response.status}", response.status
-                    )
-                return await response.json()
-        except (aiohttp.ContentTypeError, ValueError) as err:
-            raise TigoResponseError(f"{query} did not return JSON: {err}") from err
-        except (aiohttp.ClientError, TimeoutError) as err:
-            raise TigoConnectionError(f"{query} failed: {err}") from err
+        """GET a Tigo endpoint and decode its JSON answer, retrying server errors."""
+        for attempt in range(1 + RETRIES):
+            if attempt:
+                await asyncio.sleep(RETRY_DELAY)
+            try:
+                async with self._session.get(
+                    TIGO_URL + query, headers=headers, timeout=REQUEST_TIMEOUT
+                ) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    status = response.status
+            except (aiohttp.ContentTypeError, ValueError) as err:
+                raise TigoResponseError(f"{query} did not return JSON: {err}") from err
+            except (aiohttp.ClientError, TimeoutError) as err:
+                raise TigoConnectionError(f"{query} failed: {err}") from err
+            if status < 500:
+                break
+        raise TigoResponseError(f"{query} failed with status {status}", status)
 
     def get_system_id(self) -> str:
         """Return the system id"""
@@ -337,7 +385,12 @@ class TigoCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.panels = await self._call(self.tigo_data.async_get_panels)
 
     async def _async_update_data(self) -> dict[str, Any]:
-        return await self._call(self.tigo_data.fetch_data)
+        data = await self._call(self.tigo_data.fetch_data)
+        # Applies from the next update on
+        self.update_interval = (
+            FREE_SCAN_INTERVAL if data.get("plan") == "Free" else SCAN_INTERVAL
+        )
+        return data
 
     async def _call(self, request: Callable[[], Awaitable[Any]]) -> Any:
         """Run a Tigo request, translating its errors for the coordinator."""

@@ -10,6 +10,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
@@ -137,6 +138,14 @@ SUMMARY_PROPERTIES = {
     },
 }
 
+PLAN_PROPERTIES = {
+    "name": "Plan",
+    "native_unit_of_measurement": None,
+    "device_class": SensorDeviceClass.ENUM,
+    "state_class": None,
+    "attr_icon": "mdi:license",
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: TigoConfigEntry, add_entities: AddEntitiesCallback
@@ -168,6 +177,10 @@ async def async_setup_entry(
             if key not in added and coordinator.data.get(key) is not None:
                 added.add(key)
                 entities.append(TigoSummarySensor(coordinator, key))
+
+        if "plan" not in added and coordinator.data.get("plan") is not None:
+            added.add("plan")
+            entities.append(TigoPlanSensor(coordinator))
 
         if entities:
             add_entities(entities)
@@ -213,6 +226,24 @@ class TigoSummarySensor(TigoSensor):
     def native_value(self) -> Any:
         """Return the summary reading."""
         return self.coordinator.data.get(self._property)
+
+
+class TigoPlanSensor(TigoSensor):
+    """The Tigo plan of the system, free or premium."""
+
+    _attr_options = ["Free", "Premium"]
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, PLAN_PROPERTIES)
+        self._attr_unique_id = DOMAIN + "tigo.plan." + coordinator.get_system_id()
+        self._attr_name = PLAN_PROPERTIES["name"]
+
+    @property
+    def native_value(self) -> Any:
+        """Return the plan."""
+        return self.coordinator.data.get("plan")
 
 
 class TigoPanelSensor(TigoSensor):
